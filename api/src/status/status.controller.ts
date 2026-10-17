@@ -9,6 +9,9 @@ import { StatusService } from './status.service';
 import { MaintenanceWindowRecord, MaintenanceWindowStatus, StatusReport } from './status.interface';
 import { ScheduleMaintenanceDto } from './dto/schedule-maintenance.dto';
 import { ArchiveMaintenanceDto } from './dto/archive-maintenance.dto';
+import { ReleaseGateService } from './release-gate/release-gate.service';
+import { ReleaseGateEvaluation, ReleaseGateBypassInfo } from './release-gate/release-gate.interface';
+import { ReleaseGateBypassDto } from './release-gate/dto/release-gate-bypass.dto';
 
 /** An admin-facing window: the record plus its derived schedule state. */
 type MaintenanceWindowView = MaintenanceWindowRecord & { status: MaintenanceWindowStatus };
@@ -16,12 +19,56 @@ type MaintenanceWindowView = MaintenanceWindowRecord & { status: MaintenanceWind
 @ApiTags('status')
 @Controller('status')
 export class StatusController {
-  constructor(private readonly status: StatusService) {}
+  constructor(
+    private readonly status: StatusService,
+    private readonly releaseGate: ReleaseGateService,
+  ) {}
 
   /** Public, unauthenticated status feed (issue #303). No guard: this is meant to be embeddable on a public status page. */
   @Get()
   getStatus(): Promise<StatusReport> {
     return this.status.getPublicStatus();
+  }
+
+  /**
+   * Release Gate status for contract/API schema compatibility (#473).
+   * Embeddable / monitorable in deployment pipelines.
+   */
+  @Get('release-gate')
+  getReleaseGateStatus(): Promise<ReleaseGateEvaluation> {
+    return this.releaseGate.evaluateReleaseGate(false);
+  }
+
+  /**
+   * Trigger an on-demand, non-cached release gate evaluation run (#473).
+   * Requires administrative incident/maintenance permission.
+   */
+  @Post('release-gate/evaluate')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @HttpCode(HttpStatus.OK)
+  evaluateReleaseGate(): Promise<ReleaseGateEvaluation> {
+    return this.releaseGate.evaluateReleaseGate(true);
+  }
+
+  /**
+   * Configure administrative bypass for release gate (#473).
+   * Used for emergency deployments or canary environments.
+   */
+  @Post('release-gate/bypass')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @HttpCode(HttpStatus.OK)
+  setReleaseGateBypass(
+    @Body() dto: ReleaseGateBypassDto,
+    @Req() req: AuthenticatedRequest,
+  ): ReleaseGateBypassInfo {
+    return this.releaseGate.setBypass(
+      dto.enable,
+      dto.reason,
+      req.user.walletAddress,
+      dto.expiresAt,
+    );
   }
 
   @Post('maintenance')
